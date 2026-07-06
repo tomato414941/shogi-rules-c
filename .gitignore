@@ -1,0 +1,4 @@
+*.o
+*.a
+shogi-rules-cli
+__pycache__/
