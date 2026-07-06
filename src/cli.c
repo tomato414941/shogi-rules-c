@@ -4,7 +4,26 @@
 #include "shogi_rules.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+static unsigned long long perft(sr_board *board, int depth) {
+    if (depth <= 0) {
+        return 1;
+    }
+    sr_move moves[SR_MAX_MOVES];
+    int count = sr_legal_moves(board, moves);
+    if (depth == 1) {
+        return (unsigned long long)count;
+    }
+    unsigned long long nodes = 0;
+    for (int i = 0; i < count; i++) {
+        sr_push(board, moves[i]);
+        nodes += perft(board, depth - 1);
+        sr_pop(board);
+    }
+    return nodes;
+}
 
 int main(void) {
     sr_init();
@@ -42,6 +61,8 @@ int main(void) {
             if (count == 0) {
                 putchar('\n');
             }
+        } else if (strncmp(line, "perft ", 6) == 0) {
+            printf("%llu\n", perft(board, atoi(line + 6)));
         } else if (strcmp(line, "boardsfen") == 0) {
             char sfen[128];
             sr_board_sfen(board, sfen, sizeof(sfen));

@@ -109,6 +109,31 @@ class OracleTest(unittest.TestCase):
             self.cli.command(f"push {move}")
             reference.push_usi(move)
 
+    def test_perft_matches_reference_and_known_values(self) -> None:
+        def reference_perft(board: Board, depth: int) -> int:
+            if depth <= 0:
+                return 1
+            moves = board.legal_moves
+            if depth == 1:
+                return len(moves)
+            nodes = 0
+            for move in moves:
+                board.push(move)
+                nodes += reference_perft(board, depth - 1)
+                board.pop()
+            return nodes
+
+        self.cli.command("startpos")
+        reference = Board.startpos()
+        for depth in (1, 2, 3):
+            self.assertEqual(
+                int(self.cli.command(f"perft {depth}")),
+                reference_perft(reference, depth),
+                f"perft {depth}",
+            )
+        # Known shogi perft values from the startpos.
+        self.assertEqual(int(self.cli.command("perft 4")), 719731)
+
     def test_rejects_structurally_invalid_pushes(self) -> None:
         self.cli.command("startpos")
         self.assertEqual(self.cli.command("push P*5e"), "error")
