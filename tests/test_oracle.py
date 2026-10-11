@@ -12,7 +12,64 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_SRC = ROOT.parent / "shogi-rules-python" / "src"
 sys.path.insert(0, str(REFERENCE_SRC))
 
-from shogi_rules import Board  # noqa: E402
+from shogi_rules import STARTPOS_SFEN, Board  # noqa: E402
+
+REJECTED_SFENS = (
+    "",
+    "4k4/9/9/9/9/9/9/9/4K4 b",
+    "4k4/9/9/9/9/9/9/9/4K4 b - 1 moves 7g7f",
+    "kK b - 1",
+    "4k4/9/9/9/9/9/9/9/4K4/ b - 1",
+    "4k5/9/9/9/9/9/9/9/4K4 b - 1",
+    "4k3/9/9/9/9/9/9/9/4K4 b - 1",
+    "4k4/9/9/9/9/9/9/9/04K4 b - 1",
+    "4k4/9/9/9/9/9/9/+1P7/4K4 b - 1",
+    "4k4/9/9/9/9/9/9/+G8/4K4 b - 1",
+    "4k4/9/9/9/9/9/9/8+/4K4 b - 1",
+    "4k4/9/9/9/9/9/9/9/4K4 x - 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b 0P 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b 2PP 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b P2 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b K 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b 99999999999P 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b - 0",
+    "4k4/9/9/9/9/9/9/9/4K4 b - -1",
+    "4k4/9/9/9/9/9/9/9/4K4 b - 1000000001",
+    "4k4/9/9/9/9/9/9/9/4K4 b - 99999999999",
+    "4k4/9/9/9/9/9/9/9/K3K4 b - 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b 10P9p 1",
+    "4k4/9/9/9/9/9/9/+R8/4K4 b 2R 1",
+    "4k4/9/9/9/9/9/4P4/4P4/4K4 b - 1",
+    "P3k4/9/9/9/9/9/9/9/4K4 b - 1",
+    "4k4/N8/9/9/9/9/9/9/4K4 b - 1",
+    "4k4/9/9/9/9/9/9/9/p3K4 b - 1",
+    "4k4/9/9/9/9/9/9/4r4/4K4 w - 1",
+)
+READ_SFENS = (
+    "4k4/9/9/9/9/9/9/9/4K4 b -",
+    " 4k4/9/9/9/9/9/9/9/4K4 \t b  -  1 ",
+    "4k4/45/9/9/9/9/9/9/4K4 b - 1",
+    "4k4/9/9/9/9/9/9/9/4K4 b pR1P02s 007",
+    "4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
+    "4k4/9/9/9/9/9/9/9/4K4 w - 1000000000",
+    "4k4/9/9/9/9/9/9/4r4/4K4 b - 1",
+    "+P3k3+L/+N8/9/9/9/9/4P4/4+P4/4K4 b - 1",
+)
+SFEN_ALPHABET = "0123456789+-/ \tbwPLNSGBRKplnsgbrk"
+
+
+def mutate(sfen: str, rng: random.Random) -> str:
+    chars = list(sfen)
+    for _ in range(rng.randint(1, 3)):
+        index = rng.randrange(len(chars) + 1)
+        edit = rng.choice(("insert", "delete", "replace"))
+        if edit == "insert" or index == len(chars):
+            chars.insert(index, rng.choice(SFEN_ALPHABET))
+        elif edit == "delete":
+            del chars[index]
+        else:
+            chars[index] = rng.choice(SFEN_ALPHABET)
+    return "".join(chars)
 
 
 class Cli:
@@ -138,6 +195,55 @@ class OracleTest(unittest.TestCase):
         self.cli.command("startpos")
         self.assertEqual(self.cli.command("push P*5e"), "error")
         self.assertEqual(self.cli.command("push 5i5a"), "error")
+
+    def test_rejects_the_sfens_the_reference_rejects(self) -> None:
+        for sfen in REJECTED_SFENS:
+            with self.subTest(sfen=sfen):
+                with self.assertRaises(ValueError):
+                    Board.from_sfen(sfen)
+                self.assertEqual(self.cli.command("sfen " + sfen), "error")
+
+    def test_reads_sfens_as_the_reference_reads_them(self) -> None:
+        for sfen in READ_SFENS:
+            with self.subTest(sfen=sfen):
+                self.assertEqual(self.cli.command("sfen " + sfen), "ok")
+                self.assertEqual(self.cli.command("boardsfen"), Board.from_sfen(sfen).sfen())
+
+    def test_reads_mutated_sfens_as_the_reference_reads_them(self) -> None:
+        rng = random.Random(20261011)
+        bases = [STARTPOS_SFEN]
+        reference = Board.startpos()
+        for _ in range(80):
+            moves = sorted(reference.legal_move_usis())
+            if not moves:
+                break
+            reference.push_usi(rng.choice(moves))
+            bases.append(reference.sfen())
+        accepted = 0
+        for _ in range(4000):
+            sfen = mutate(rng.choice(bases), rng)
+            try:
+                expected = Board.from_sfen(sfen).sfen()
+            except ValueError:
+                expected = None
+            if expected is None:
+                self.assertEqual(self.cli.command("sfen " + sfen), "error", sfen)
+                continue
+            accepted += 1
+            self.assertEqual(self.cli.command("sfen " + sfen), "ok", sfen)
+            self.assertEqual(self.cli.command("boardsfen"), expected, sfen)
+        self.assertGreater(accepted, 0)
+
+    def test_keeps_the_position_when_an_sfen_is_rejected(self) -> None:
+        self.cli.command("startpos")
+        self.cli.command("push 7g7f")
+        reference = Board.startpos()
+        reference.push_usi("7g7f")
+
+        self.assertEqual(self.cli.command("sfen 4k4/9/9/9/9/9/9/9/K3K4 b - 1"), "error")
+
+        self.assert_position_matches(reference)
+        self.assertEqual(self.cli.command("pop"), "ok")
 
 
 if __name__ == "__main__":

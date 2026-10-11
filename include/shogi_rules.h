@@ -60,7 +60,13 @@ typedef struct sr_board sr_board;
  * is optional and idempotent. */
 void sr_init(void);
 
-/* Board lifecycle. Constructors return NULL on invalid SFEN. */
+/* Board lifecycle. Constructors return NULL, and sr_board_set_sfen returns
+ * false leaving the board unchanged, unless the SFEN is well formed and its
+ * position can occur in a game: one king a side, no more pieces than a set
+ * has, no two unpromoted pawns of a side on a file, no piece where it can
+ * never move, and the side not to move not in check. Fields are separated
+ * by ASCII whitespace; the move number, from 1 to 1000000000, may be left
+ * out. */
 sr_board *sr_board_startpos(void);
 sr_board *sr_board_from_sfen(const char *sfen);
 void sr_board_free(sr_board *board);

@@ -11,6 +11,9 @@
 
 #define NUM_PIECE_TYPES 15 /* 0 unused, 1..14 */
 #define MAX_UNDO 2048
+/* With at most MAX_UNDO moves pushed on top, the move number stays an int
+ * of ten digits. */
+#define MAX_MOVE_NUMBER 1000000000
 
 static const int DROP_PIECES[] = {SR_ROOK, SR_BISHOP, SR_GOLD, SR_SILVER,
                                   SR_KNIGHT, SR_LANCE, SR_PAWN};
@@ -22,6 +25,12 @@ static const int STEP_ATTACK_PIECES[] = {
     SR_PROM_ROOK,
 };
 #define NUM_STEP_ATTACK_PIECES 11
+
+/* The pieces of a shogi set besides the kings, by unpromoted type; promoted
+ * pieces count as their unpromoted kind. */
+static const int PIECE_SET[NUM_PIECE_TYPES] = {
+    0, 18, 4, 4, 4, 4, 2, 2, /* P L N S G B R */
+};
 
 static const char PIECE_CHARS[NUM_PIECE_TYPES] = {
     /* index by unpromoted piece type; 0 unused */
@@ -405,15 +414,194 @@ static uint64_t compute_hash(const sr_board *board) {
 }
 
 static bool find_king_squares(sr_board *board) {
-    board->king_squares[SR_BLACK] = -1;
-    board->king_squares[SR_WHITE] = -1;
+    int kings[2] = {0, 0};
     for (int square = 0; square < SR_BOARD_SIZE; square++) {
         int piece = board->board[square];
         if (abs(piece) == SR_KING) {
             board->king_squares[piece_color(piece)] = square;
+            kings[piece_color(piece)]++;
         }
     }
-    return board->king_squares[SR_BLACK] >= 0 && board->king_squares[SR_WHITE] >= 0;
+    return kings[SR_BLACK] == 1 && kings[SR_WHITE] == 1;
+}
+
+static bool can_move_without_promotion(int piece_type, int to_square, int color);
+
+/* A position that can occur in a game: no more pieces than a set has, no two
+ * unpromoted pawns of a side on a file, no piece where it can never move,
+ * and the side not to move not in check. */
+static bool is_possible_position(const sr_board *board) {
+    int counts[NUM_PIECE_TYPES] = {0};
+    bool pawn_files[2][9] = {{false}};
+    for (int square = 0; square < SR_BOARD_SIZE; square++) {
+        int piece = board->board[square];
+        int piece_type = abs(piece);
+        if (piece_type == 0 || piece_type == SR_KING) {
+            continue;
+        }
+        int color = piece_color(piece);
+        counts[unpromoted_of(piece_type)]++;
+        if (!can_move_without_promotion(piece_type, square, color)) {
+            return false;
+        }
+        if (piece_type == SR_PAWN) {
+            if (pawn_files[color][square % 9]) {
+                return false;
+            }
+            pawn_files[color][square % 9] = true;
+        }
+    }
+    for (int i = 0; i < NUM_DROP_PIECES; i++) {
+        int piece_type = DROP_PIECES[i];
+        int count = counts[piece_type] + board->hands[SR_BLACK][piece_type] +
+                    board->hands[SR_WHITE][piece_type];
+        if (count > PIECE_SET[piece_type]) {
+            return false;
+        }
+    }
+    return !sr_is_attacked_by(board, board->turn, board->king_squares[1 - board->turn]);
+}
+
+/* SFEN fields are separated by runs of ASCII whitespace, whatever the
+ * locale. */
+static bool is_sfen_space(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
+}
+
+typedef struct {
+    const char *text;
+    size_t length;
+} sfen_field;
+
+/* Returns the number of fields, or max + 1 when there are more than max. */
+static int split_sfen(const char *sfen, sfen_field *fields, int max) {
+    int count = 0;
+    const char *cursor = sfen;
+    for (;;) {
+        while (is_sfen_space(*cursor)) {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            return count;
+        }
+        if (count == max) {
+            return max + 1;
+        }
+        fields[count].text = cursor;
+        while (*cursor != '\0' && !is_sfen_space(*cursor)) {
+            cursor++;
+        }
+        fields[count].length = (size_t)(cursor - fields[count].text);
+        count++;
+    }
+}
+
+/* Upper case for black, lower case for white; 0 for any other character. */
+static int piece_from_letter(char c, int *color) {
+    if (c >= 'a' && c <= 'z') {
+        *color = SR_WHITE;
+        return piece_from_char((char)(c - 'a' + 'A'));
+    }
+    *color = SR_BLACK;
+    return piece_from_char(c);
+}
+
+/* Nine ranks from a to i separated by '/', each nine squares from file 9 to
+ * 1: a digit for that many empty squares, a letter for a piece, '+' before a
+ * letter for a promoted one. */
+static bool parse_board_field(sr_board *board, sfen_field field) {
+    int rank = 0;
+    int file_index = 0;
+    for (size_t i = 0; i < field.length; i++) {
+        char c = field.text[i];
+        if (c == '/') {
+            if (file_index != 9 || rank == 8) {
+                return false;
+            }
+            rank++;
+            file_index = 0;
+            continue;
+        }
+        if (c >= '1' && c <= '9') {
+            file_index += c - '0';
+            if (file_index > 9) {
+                return false;
+            }
+            continue;
+        }
+        bool promoted = c == '+';
+        if (promoted) {
+            if (++i == field.length) {
+                return false;
+            }
+            c = field.text[i];
+        }
+        int color;
+        int piece_type = piece_from_letter(c, &color);
+        if (piece_type == 0 || file_index == 9) {
+            return false;
+        }
+        if (promoted) {
+            piece_type = promoted_of(piece_type);
+            if (piece_type == 0) {
+                return false;
+            }
+        }
+        board->board[rank * 9 + file_index] = (int8_t)signed_piece(color, piece_type);
+        file_index++;
+    }
+    return rank == 8 && file_index == 9;
+}
+
+/* '-' for none, or each kind a side holds once, its count before it when
+ * more than one. No kind has more pieces than the pawns, so a larger count
+ * is refused before it can overflow. */
+static bool parse_hand_field(sr_board *board, sfen_field field) {
+    if (field.length == 1 && field.text[0] == '-') {
+        return true;
+    }
+    size_t i = 0;
+    while (i < field.length) {
+        int count = 0;
+        size_t digits = 0;
+        for (; i < field.length && field.text[i] >= '0' && field.text[i] <= '9'; i++) {
+            count = count * 10 + (field.text[i] - '0');
+            if (count > PIECE_SET[SR_PAWN]) {
+                return false;
+            }
+            digits++;
+        }
+        if (i == field.length) {
+            return false;
+        }
+        int color;
+        int piece_type = piece_from_letter(field.text[i++], &color);
+        if (piece_type == 0 || piece_type == SR_KING || (digits > 0 && count == 0) ||
+            board->hands[color][piece_type] != 0) {
+            return false;
+        }
+        board->hands[color][piece_type] = (uint8_t)(digits > 0 ? count : 1);
+    }
+    return true;
+}
+
+static bool parse_move_number_field(sr_board *board, sfen_field field) {
+    long long value = 0;
+    for (size_t i = 0; i < field.length; i++) {
+        char c = field.text[i];
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        value = value * 10 + (c - '0');
+        if (value > MAX_MOVE_NUMBER) {
+            return false;
+        }
+    }
+    if (value < 1) {
+        return false;
+    }
+    board->move_number = (int)value;
+    return true;
 }
 
 static bool parse_sfen_into(sr_board *board, const char *sfen) {
@@ -422,81 +610,20 @@ static bool parse_sfen_into(sr_board *board, const char *sfen) {
     board->undo_count = 0;
     board->move_number = 1;
 
-    const char *cursor = sfen;
-    int square = 0;
-    bool promoted = false;
-    for (; *cursor && *cursor != ' '; cursor++) {
-        char c = *cursor;
-        if (c == '/') {
-            continue;
-        }
-        if (isdigit((unsigned char)c)) {
-            square += c - '0';
-            continue;
-        }
-        if (c == '+') {
-            promoted = true;
-            continue;
-        }
-        int piece_type = piece_from_char((char)toupper((unsigned char)c));
-        if (piece_type == 0 || square >= SR_BOARD_SIZE) {
-            return false;
-        }
-        if (promoted) {
-            piece_type = promoted_of(piece_type);
-            if (piece_type == 0) {
-                return false;
-            }
-            promoted = false;
-        }
-        int color = isupper((unsigned char)c) ? SR_BLACK : SR_WHITE;
-        board->board[square] = (int8_t)signed_piece(color, piece_type);
-        square++;
-    }
-    if (*cursor != ' ') {
+    sfen_field fields[4];
+    int count = split_sfen(sfen, fields, 4);
+    if (count < 3 || count > 4 || !parse_board_field(board, fields[0])) {
         return false;
     }
-    cursor++;
-
-    if (*cursor == 'b') {
-        board->turn = SR_BLACK;
-    } else if (*cursor == 'w') {
-        board->turn = SR_WHITE;
-    } else {
+    if (fields[1].length != 1 || (fields[1].text[0] != 'b' && fields[1].text[0] != 'w')) {
         return false;
     }
-    cursor++;
-    if (*cursor != ' ') {
+    board->turn = fields[1].text[0] == 'b' ? SR_BLACK : SR_WHITE;
+    if (!parse_hand_field(board, fields[2]) ||
+        (count == 4 && !parse_move_number_field(board, fields[3]))) {
         return false;
     }
-    cursor++;
-
-    if (*cursor == '-') {
-        cursor++;
-    } else {
-        int count = 0;
-        for (; *cursor && *cursor != ' '; cursor++) {
-            char c = *cursor;
-            if (isdigit((unsigned char)c)) {
-                count = count * 10 + (c - '0');
-                continue;
-            }
-            int piece_type = piece_from_char((char)toupper((unsigned char)c));
-            if (piece_type == 0) {
-                return false;
-            }
-            int color = isupper((unsigned char)c) ? SR_BLACK : SR_WHITE;
-            board->hands[color][piece_type] = (uint8_t)(count > 0 ? count : 1);
-            count = 0;
-        }
-    }
-    if (*cursor == ' ') {
-        cursor++;
-        int move_number = atoi(cursor);
-        board->move_number = move_number > 0 ? move_number : 1;
-    }
-
-    if (!find_king_squares(board)) {
+    if (!find_king_squares(board) || !is_possible_position(board)) {
         return false;
     }
     board->hash = compute_hash(board);
