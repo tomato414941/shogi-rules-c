@@ -87,8 +87,9 @@ int sr_board_ply(const sr_board *board); /* len(move_stack) */
  * string when capacity is not 0. Nothing is written past capacity. */
 int sr_board_sfen(const sr_board *board, char *buffer, size_t capacity);
 
-/* Move notation. sr_move_from_usi returns a move with to_square == -1 on
- * parse failure. Buffer for sr_move_usi must hold at least 8 bytes. */
+/* Move notation. sr_move_from_usi reads a move such as 7g7f, 7g7f+ or P*5e
+ * with nothing around it, and returns a move with to_square == -1 for any
+ * other text. Buffer for sr_move_usi must hold at least 8 bytes. */
 sr_move sr_move_from_usi(const char *usi);
 void sr_move_usi(sr_move move, char *buffer);
 
@@ -98,10 +99,15 @@ int sr_legal_moves(sr_board *board, sr_move *out);
 int sr_legal_tactical_moves(sr_board *board, sr_move *out, bool include_quiet_checks);
 bool sr_has_legal_move(sr_board *board);
 
-/* Position transitions. sr_push returns false (and leaves the board
- * unchanged) on structurally invalid moves: capturing a king or dropping
- * a piece that is not in hand. It does not otherwise validate legality,
- * mirroring the Python reference. */
+/* Position transitions. sr_push plays a move without checking that it is
+ * legal, which is the caller's to ensure (a move from sr_legal_moves is). It
+ * returns false, leaving the board unchanged, for a move that would break
+ * the board: a square off the board, no piece of the side to move where it
+ * moves from, a capture of its own piece or of a king, a promotion of a
+ * piece that cannot promote, or a drop of a piece not in hand or onto an
+ * occupied square; and when 2048 moves are already pushed. A null move has
+ * both squares -1 and nothing else set. sr_push_usi plays only legal
+ * moves. */
 bool sr_push(sr_board *board, sr_move move);
 bool sr_push_usi(sr_board *board, const char *usi);
 /* Returns false if the move stack is empty. */

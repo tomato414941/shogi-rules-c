@@ -55,21 +55,55 @@ READ_SFENS = (
     "4k4/9/9/9/9/9/9/4r4/4K4 b - 1",
     "+P3k3+L/+N8/9/9/9/9/4P4/4+P4/4K4 b - 1",
 )
+# Each position with a move that is malformed or not legal there.
+REJECTED_USIS = (
+    (STARTPOS_SFEN, ""),
+    (STARTPOS_SFEN, "7g7fxyz"),
+    (STARTPOS_SFEN, "7g7f++"),
+    (STARTPOS_SFEN, "0g0f"),
+    (STARTPOS_SFEN, "7j7f"),
+    (STARTPOS_SFEN, "p*5e"),
+    (STARTPOS_SFEN, "K*5e"),
+    (STARTPOS_SFEN, "5e5d"),
+    (STARTPOS_SFEN, "5a5b"),
+    (STARTPOS_SFEN, "6i5h+"),
+    (STARTPOS_SFEN, "2h2b"),
+    (STARTPOS_SFEN, "7g7f+"),
+    (STARTPOS_SFEN, "7g7e"),
+    ("4k4/9/9/9/9/9/4P4/9/4K4 b P 1", "P*5e"),
+    ("4k4/9/9/9/9/9/9/9/4K4 b P 1", "P*1a"),
+    ("4k4/P8/9/9/9/9/9/9/4K4 b - 1", "9b9a"),
+    ("k3r4/9/9/9/9/9/9/4G4/4K4 b - 1", "5h4h"),
+    ("8k/9/6NG1/9/9/9/9/9/4K4 b P 1", "P*1b"),
+)
 SFEN_ALPHABET = "0123456789+-/ \tbwPLNSGBRKplnsgbrk"
+USI_ALPHABET = "0123456789abcdefghij+*PLNSGBRKplnsgbrk"
 
 
-def mutate(sfen: str, rng: random.Random) -> str:
-    chars = list(sfen)
+def mutate(text: str, rng: random.Random, alphabet: str) -> str:
+    chars = list(text)
     for _ in range(rng.randint(1, 3)):
         index = rng.randrange(len(chars) + 1)
         edit = rng.choice(("insert", "delete", "replace"))
         if edit == "insert" or index == len(chars):
-            chars.insert(index, rng.choice(SFEN_ALPHABET))
+            chars.insert(index, rng.choice(alphabet))
         elif edit == "delete":
             del chars[index]
         else:
-            chars[index] = rng.choice(SFEN_ALPHABET)
+            chars[index] = rng.choice(alphabet)
     return "".join(chars)
+
+
+def playout_sfens(rng: random.Random, plies: int) -> list[str]:
+    sfens = [STARTPOS_SFEN]
+    reference = Board.startpos()
+    for _ in range(plies):
+        moves = sorted(reference.legal_move_usis())
+        if not moves:
+            break
+        reference.push_usi(rng.choice(moves))
+        sfens.append(reference.sfen())
+    return sfens
 
 
 class Cli:
@@ -211,17 +245,10 @@ class OracleTest(unittest.TestCase):
 
     def test_reads_mutated_sfens_as_the_reference_reads_them(self) -> None:
         rng = random.Random(20261011)
-        bases = [STARTPOS_SFEN]
-        reference = Board.startpos()
-        for _ in range(80):
-            moves = sorted(reference.legal_move_usis())
-            if not moves:
-                break
-            reference.push_usi(rng.choice(moves))
-            bases.append(reference.sfen())
+        bases = playout_sfens(rng, 80)
         accepted = 0
         for _ in range(4000):
-            sfen = mutate(rng.choice(bases), rng)
+            sfen = mutate(rng.choice(bases), rng, SFEN_ALPHABET)
             try:
                 expected = Board.from_sfen(sfen).sfen()
             except ValueError:
@@ -233,6 +260,37 @@ class OracleTest(unittest.TestCase):
             self.assertEqual(self.cli.command("sfen " + sfen), "ok", sfen)
             self.assertEqual(self.cli.command("boardsfen"), expected, sfen)
         self.assertGreater(accepted, 0)
+
+    def test_rejects_the_moves_the_reference_rejects(self) -> None:
+        for sfen, usi in REJECTED_USIS:
+            with self.subTest(sfen=sfen, usi=usi):
+                reference = Board.from_sfen(sfen)
+                with self.assertRaises(ValueError):
+                    reference.push_usi(usi)
+                self.assertEqual(self.cli.command("sfen " + sfen), "ok")
+                self.assertEqual(self.cli.command("push " + usi), "error")
+                self.assert_position_matches(reference)
+
+    def test_plays_mutated_moves_as_the_reference_plays_them(self) -> None:
+        rng = random.Random(20261012)
+        played = 0
+        for sfen in playout_sfens(rng, 60):
+            reference = Board.from_sfen(sfen)
+            self.assertEqual(self.cli.command("sfen " + sfen), "ok")
+            moves = sorted(reference.legal_move_usis())
+            for _ in range(40):
+                usi = mutate(rng.choice(moves), rng, USI_ALPHABET) if moves else mutate("7g7f", rng, USI_ALPHABET)
+                try:
+                    reference.push_usi(usi)
+                except ValueError:
+                    self.assertEqual(self.cli.command("push " + usi), "error", (sfen, usi))
+                    continue
+                played += 1
+                self.assertEqual(self.cli.command("push " + usi), "ok", (sfen, usi))
+                self.assertEqual(self.cli.command("boardsfen"), reference.sfen(), (sfen, usi))
+                self.assertEqual(self.cli.command("pop"), "ok")
+                reference.pop()
+        self.assertGreater(played, 0)
 
     def test_keeps_the_position_when_an_sfen_is_rejected(self) -> None:
         self.cli.command("startpos")

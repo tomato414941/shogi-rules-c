@@ -783,9 +783,9 @@ static void square_name(int square, char out[3]) {
 sr_move sr_move_from_usi(const char *usi) {
     sr_move move = {-1, -1, 0, 0};
     size_t length = strlen(usi);
-    if (length >= 2 && usi[1] == '*') {
+    if (length == 4 && usi[1] == '*') {
         int piece_type = piece_from_char(usi[0]);
-        int to_square = length >= 4 ? square_from_name(usi + 2) : -1;
+        int to_square = square_from_name(usi + 2);
         if (piece_type == 0 || piece_type == SR_KING || to_square < 0) {
             return move;
         }
@@ -793,7 +793,7 @@ sr_move sr_move_from_usi(const char *usi) {
         move.drop_piece_type = (uint8_t)piece_type;
         return move;
     }
-    if (length < 4) {
+    if (length != 4 && (length != 5 || usi[4] != '+')) {
         return move;
     }
     int from_square = square_from_name(usi);
@@ -803,7 +803,7 @@ sr_move sr_move_from_usi(const char *usi) {
     }
     move.from_square = (int8_t)from_square;
     move.to_square = (int8_t)to_square;
-    move.promotion = usi[length - 1] == '+';
+    move.promotion = length == 5;
     return move;
 }
 
@@ -836,20 +836,51 @@ static void add_hand(sr_board *board, int color, int piece_type) {
     board->hands[color][piece_type] = (uint8_t)new_count;
 }
 
-static bool remove_hand(sr_board *board, int color, int piece_type) {
+static void remove_hand(sr_board *board, int color, int piece_type) {
     int count = board->hands[color][piece_type];
-    if (count <= 0) {
-        return false;
-    }
     board->hash ^= hand_hash(color, piece_type, count);
     if (count > 1) {
         board->hash ^= hand_hash(color, piece_type, count - 1);
     }
     board->hands[color][piece_type] = (uint8_t)(count - 1);
-    return true;
 }
 
-bool sr_push(sr_board *board, sr_move move) {
+/* Whether a move keeps the board whole. A null move has both squares -1 and
+ * nothing else set. Any other move goes to a square on the board without
+ * taking a king: a piece of the side to move from a square, taking no piece
+ * of its own and promoting only if it can, or a piece in hand dropped onto
+ * an empty square. */
+static bool fits_board(const sr_board *board, sr_move move) {
+    if (move.to_square == -1) {
+        return move.from_square == -1 && !move.promotion && move.drop_piece_type == 0;
+    }
+    if (move.to_square < 0 || move.to_square >= SR_BOARD_SIZE) {
+        return false;
+    }
+    int target = board->board[move.to_square];
+    if (abs(target) == SR_KING) {
+        return false;
+    }
+    if (move.from_square == -1) {
+        int piece_type = move.drop_piece_type;
+        return piece_type >= SR_PAWN && piece_type <= SR_ROOK && !move.promotion &&
+               target == 0 && board->hands[board->turn][piece_type] > 0;
+    }
+    if (move.from_square < 0 || move.from_square >= SR_BOARD_SIZE ||
+        move.drop_piece_type != 0) {
+        return false;
+    }
+    int piece = board->board[move.from_square];
+    if (piece == 0 || piece_color(piece) != board->turn ||
+        (target != 0 && piece_color(target) == board->turn)) {
+        return false;
+    }
+    return !move.promotion || promoted_of(abs(piece)) != 0;
+}
+
+/* Plays a move that fits the board; false only when the undo stack is
+ * full. */
+static bool push_move(sr_board *board, sr_move move) {
     if (board->undo_count >= MAX_UNDO) {
         return false;
     }
@@ -875,18 +906,10 @@ bool sr_push(sr_board *board, sr_move move) {
     }
 
     int captured_piece = board->board[move.to_square];
-    if (abs(captured_piece) == SR_KING) {
-        return false;
-    }
     int moved_piece;
     if (move.from_square < 0) {
-        if (move.drop_piece_type == 0) {
-            return false;
-        }
         moved_piece = signed_piece(previous_turn, move.drop_piece_type);
-        if (!remove_hand(board, previous_turn, move.drop_piece_type)) {
-            return false;
-        }
+        remove_hand(board, previous_turn, move.drop_piece_type);
         board->board[move.to_square] = (int8_t)moved_piece;
         board->hash ^= board_hash(moved_piece, move.to_square);
     } else {
@@ -914,12 +937,28 @@ bool sr_push(sr_board *board, sr_move move) {
     return true;
 }
 
+bool sr_push(sr_board *board, sr_move move) {
+    return fits_board(board, move) && push_move(board, move);
+}
+
+static bool same_move(sr_move a, sr_move b) {
+    return a.from_square == b.from_square && a.to_square == b.to_square &&
+           !a.promotion == !b.promotion && a.drop_piece_type == b.drop_piece_type;
+}
+
 bool sr_push_usi(sr_board *board, const char *usi) {
     sr_move move = sr_move_from_usi(usi);
-    if (move.to_square < 0 && move.from_square < 0 && move.drop_piece_type == 0) {
+    if (move.to_square < 0) {
         return false;
     }
-    return sr_push(board, move);
+    sr_move legal[SR_MAX_MOVES];
+    int count = sr_legal_moves(board, legal);
+    for (int i = 0; i < count; i++) {
+        if (same_move(legal[i], move)) {
+            return push_move(board, move);
+        }
+    }
+    return false;
 }
 
 bool sr_pop(sr_board *board) {
@@ -1253,7 +1292,7 @@ static bool has_legal_evasion_without_pawn_drop_mate_check(sr_board *board) {
     sr_move responses[SR_MAX_MOVES];
     int count = pseudo_legal_moves(board, responses);
     for (int i = 0; i < count; i++) {
-        if (!sr_push(board, responses[i])) {
+        if (!push_move(board, responses[i])) {
             continue;
         }
         bool safe = !sr_is_attacked_by(board, board->turn,
@@ -1270,7 +1309,7 @@ static bool is_illegal_pawn_drop_mate(sr_board *board, sr_move move) {
     if (move.from_square >= 0 || move.drop_piece_type != SR_PAWN) {
         return false;
     }
-    if (!sr_push(board, move)) {
+    if (!push_move(board, move)) {
         return true;
     }
     int defender = board->turn;
@@ -1293,7 +1332,7 @@ int sr_legal_moves(sr_board *board, sr_move *out) {
         if (is_illegal_pawn_drop_mate(board, move)) {
             continue;
         }
-        if (!sr_push(board, move)) {
+        if (!push_move(board, move)) {
             continue;
         }
         if (!sr_is_attacked_by(board, board->turn,
@@ -1313,7 +1352,7 @@ bool sr_has_legal_move(sr_board *board) {
         if (is_illegal_pawn_drop_mate(board, move)) {
             continue;
         }
-        if (!sr_push(board, move)) {
+        if (!push_move(board, move)) {
             continue;
         }
         bool legal = !sr_is_attacked_by(board, board->turn,
@@ -1344,7 +1383,7 @@ int sr_legal_tactical_moves(sr_board *board, sr_move *out,
         if (!tactical && !include_quiet_checks) {
             continue;
         }
-        if (!sr_push(board, move)) {
+        if (!push_move(board, move)) {
             continue;
         }
         bool keep = false;
