@@ -64,9 +64,8 @@ int main(void) {
         } else if (strncmp(line, "perft ", 6) == 0) {
             printf("%llu\n", perft(board, atoi(line + 6)));
         } else if (strcmp(line, "boardsfen") == 0) {
-            char sfen[128];
-            sr_board_sfen(board, sfen, sizeof(sfen));
-            puts(sfen);
+            char sfen[SR_SFEN_MAX];
+            puts(sr_board_sfen(board, sfen, sizeof(sfen)) >= 0 ? sfen : "error");
         } else if (strcmp(line, "hash") == 0) {
             printf("%016llx\n", (unsigned long long)sr_board_zobrist(board));
         } else if (strcmp(line, "ischeck") == 0) {

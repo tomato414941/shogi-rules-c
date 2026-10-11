@@ -543,9 +543,33 @@ int sr_board_hand_count(const sr_board *board, int color, int piece_type) {
 }
 int sr_board_ply(const sr_board *board) { return board->undo_count; }
 
+/* Appends to the caller's buffer, never past its capacity, keeping room for
+ * the terminating NUL; overflowed records that something did not fit. */
+typedef struct {
+    char *buffer;
+    size_t capacity;
+    size_t length;
+    bool overflowed;
+} sfen_writer;
+
+static void put_char(sfen_writer *writer, char c) {
+    if (writer->length + 1 >= writer->capacity) {
+        writer->overflowed = true;
+        return;
+    }
+    writer->buffer[writer->length++] = c;
+}
+
+static void put_number(sfen_writer *writer, int value) {
+    char digits[16];
+    int count = snprintf(digits, sizeof(digits), "%d", value);
+    for (int i = 0; i < count; i++) {
+        put_char(writer, digits[i]);
+    }
+}
+
 int sr_board_sfen(const sr_board *board, char *buffer, size_t capacity) {
-    char scratch[128];
-    int length = 0;
+    sfen_writer writer = {buffer, capacity, 0, false};
     for (int rank = 0; rank < 9; rank++) {
         int empty = 0;
         for (int file_index = 0; file_index < 9; file_index++) {
@@ -555,27 +579,27 @@ int sr_board_sfen(const sr_board *board, char *buffer, size_t capacity) {
                 continue;
             }
             if (empty) {
-                scratch[length++] = (char)('0' + empty);
+                put_char(&writer, (char)('0' + empty));
                 empty = 0;
             }
             int piece_type = abs(piece);
             int base = unpromoted_of(piece_type);
             if (piece_type != base) {
-                scratch[length++] = '+';
+                put_char(&writer, '+');
             }
             char symbol = PIECE_CHARS[base];
-            scratch[length++] = piece > 0 ? symbol : (char)tolower((unsigned char)symbol);
+            put_char(&writer, piece > 0 ? symbol : (char)tolower((unsigned char)symbol));
         }
         if (empty) {
-            scratch[length++] = (char)('0' + empty);
+            put_char(&writer, (char)('0' + empty));
         }
         if (rank < 8) {
-            scratch[length++] = '/';
+            put_char(&writer, '/');
         }
     }
-    scratch[length++] = ' ';
-    scratch[length++] = board->turn == SR_BLACK ? 'b' : 'w';
-    scratch[length++] = ' ';
+    put_char(&writer, ' ');
+    put_char(&writer, board->turn == SR_BLACK ? 'b' : 'w');
+    put_char(&writer, ' ');
 
     int hand_length = 0;
     for (int color = 0; color < 2; color++) {
@@ -586,27 +610,28 @@ int sr_board_sfen(const sr_board *board, char *buffer, size_t capacity) {
                 continue;
             }
             if (count > 1) {
-                length += snprintf(scratch + length, sizeof(scratch) - (size_t)length,
-                                   "%d", count);
+                put_number(&writer, count);
             }
             char symbol = PIECE_CHARS[piece_type];
-            scratch[length++] =
-                color == SR_BLACK ? symbol : (char)tolower((unsigned char)symbol);
+            put_char(&writer,
+                     color == SR_BLACK ? symbol : (char)tolower((unsigned char)symbol));
             hand_length++;
         }
     }
     if (hand_length == 0) {
-        scratch[length++] = '-';
+        put_char(&writer, '-');
     }
-    length += snprintf(scratch + length, sizeof(scratch) - (size_t)length, " %d",
-                       board->move_number);
+    put_char(&writer, ' ');
+    put_number(&writer, board->move_number);
 
-    if ((size_t)length + 1 > capacity) {
+    if (writer.overflowed) {
+        if (capacity > 0) {
+            buffer[0] = '\0';
+        }
         return -1;
     }
-    memcpy(buffer, scratch, (size_t)length);
-    buffer[length] = '\0';
-    return length;
+    buffer[writer.length] = '\0';
+    return (int)writer.length;
 }
 
 /* ------------------------------------------------------------------ */

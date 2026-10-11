@@ -1,4 +1,5 @@
 *.o
 *.a
 shogi-rules-cli
+tests/test_board
 __pycache__/

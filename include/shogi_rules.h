@@ -37,6 +37,12 @@ extern "C" {
 /* Upper bound for legal/pseudo-legal move list buffers. */
 #define SR_MAX_MOVES 700
 
+/* Buffer size for sr_board_sfen that holds the SFEN of any position made
+ * of the standard forty pieces, terminating NUL included. The longest has
+ * every promotable piece promoted on the board, the golds in hand, and a
+ * ten-digit move number: 141 characters. */
+#define SR_SFEN_MAX 142
+
 /* from_square / to_square: 0..80, or -1 for "none" (drops have
  * from_square == -1; a null move has both == -1).
  * drop_piece_type: piece type for drops, 0 otherwise. */
@@ -71,7 +77,8 @@ int sr_board_hand_count(const sr_board *board, int color, int piece_type);
 int sr_board_ply(const sr_board *board); /* len(move_stack) */
 
 /* SFEN emission. Returns the number of characters written (excluding the
- * terminating NUL), or -1 if the buffer is too small. */
+ * terminating NUL), or -1 if the buffer is too small, leaving it an empty
+ * string when capacity is not 0. Nothing is written past capacity. */
 int sr_board_sfen(const sr_board *board, char *buffer, size_t capacity);
 
 /* Move notation. sr_move_from_usi returns a move with to_square == -1 on
