@@ -72,6 +72,17 @@ int main(void) {
             puts(sr_is_check(board) ? "1" : "0");
         } else if (strcmp(line, "gameover") == 0) {
             puts(sr_is_game_over(board) ? "1" : "0");
+        } else if (strcmp(line, "outcome") == 0) {
+            static const char *const terminations[] = {"ongoing", "checkmate", "repetition",
+                                                       "perpetual_check"};
+            sr_outcome outcome = sr_board_outcome(board);
+            printf("%s %s\n", terminations[outcome.termination],
+                   outcome.winner == SR_BLACK   ? "black"
+                   : outcome.winner == SR_WHITE ? "white"
+                                                : "-");
+        } else if (strcmp(line, "null") == 0) {
+            sr_move null_move = {-1, -1, 0, 0};
+            puts(sr_push(board, null_move) ? "ok" : "error");
         } else {
             puts("error");
         }

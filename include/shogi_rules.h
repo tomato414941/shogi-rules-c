@@ -113,10 +113,31 @@ bool sr_push_usi(sr_board *board, const char *usi);
 /* Returns false if the move stack is empty. */
 bool sr_pop(sr_board *board);
 
-/* State queries. */
+/* How a game has ended. */
+typedef enum {
+    SR_ONGOING,
+    /* The side to move has no legal move, which loses in shogi even when it
+     * is not in check. */
+    SR_CHECKMATE,
+    /* The same position for the fourth time: a draw. */
+    SR_REPETITION,
+    /* The same position for the fourth time while one side gave check with
+     * every move: that side loses. */
+    SR_PERPETUAL_CHECK,
+} sr_termination;
+
+typedef struct {
+    sr_termination termination;
+    int winner; /* SR_BLACK, SR_WHITE, or -1 for a draw or an ongoing game */
+} sr_outcome;
+
+/* State queries. A position repeats when it occurs again since the board
+ * was set or the last null move. */
 bool sr_is_check(sr_board *board);
-bool sr_is_game_over(sr_board *board);
 bool sr_is_fourfold_repetition(const sr_board *board);
+sr_outcome sr_board_outcome(sr_board *board);
+/* Whether sr_board_outcome is anything but SR_ONGOING. */
+bool sr_is_game_over(sr_board *board);
 bool sr_is_attacked_by(const sr_board *board, int color, int square);
 
 #ifdef __cplusplus

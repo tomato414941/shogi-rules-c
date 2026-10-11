@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_SRC = ROOT.parent / "shogi-rules-python" / "src"
 sys.path.insert(0, str(REFERENCE_SRC))
 
-from shogi_rules import STARTPOS_SFEN, Board  # noqa: E402
+from shogi_rules import BLACK, STARTPOS_SFEN, WHITE, Board, Move  # noqa: E402
 
 REJECTED_SFENS = (
     "",
@@ -92,6 +92,45 @@ def mutate(text: str, rng: random.Random, alphabet: str) -> str:
         else:
             chars[index] = rng.choice(alphabet)
     return "".join(chars)
+
+
+# Each start position with the moves before a cycle and the cycle that is played three times from there.
+REPEATED_CYCLES = (
+    (STARTPOS_SFEN, (), ("5i5h", "5a5b", "5h5i", "5b5a")),
+    ("8k/9/7R1/9/9/9/9/9/K8 b - 1", (), ("2c1c", "1a2a", "1c2c", "2a1a")),
+    ("8k/9/8p/7R1/9/9/9/9/K8 b - 1", ("2d2c", "1c1d"), ("2c1c", "1a2a", "1c2c", "2a1a")),
+)
+
+
+def outcome_text(board: Board) -> str:
+    outcome = board.outcome()
+    if outcome is None:
+        return "ongoing -"
+    winner = {BLACK: "black", WHITE: "white", None: "-"}[outcome.winner]
+    return f"{outcome.termination.value} {winner}"
+
+
+def find_cycle(board: Board) -> list[str] | None:
+    # Two moves, one for each side, that the next two moves take back.
+    def reversible(move: Move) -> bool:
+        return move.from_square is not None and not move.promotion and board.board[move.to_square] == 0
+
+    for first in [move for move in board.legal_moves if reversible(move)][:6]:
+        board.push(first)
+        for second in [move for move in board.legal_moves if reversible(move)][:6]:
+            cycle = [first, second, Move(first.to_square, first.from_square), Move(second.to_square, second.from_square)]
+            board.push(second)
+            if cycle[2] in board.legal_moves:
+                board.push(cycle[2])
+                legal = cycle[3] in board.legal_moves
+                board.pop()
+                if legal:
+                    board.pop()
+                    board.pop()
+                    return [move.usi() for move in cycle]
+            board.pop()
+        board.pop()
+    return None
 
 
 def playout_sfens(rng: random.Random, plies: int) -> list[str]:
@@ -291,6 +330,63 @@ class OracleTest(unittest.TestCase):
                 self.assertEqual(self.cli.command("pop"), "ok")
                 reference.pop()
         self.assertGreater(played, 0)
+
+    def assert_outcome_matches(self, reference: Board) -> None:
+        self.assertEqual(self.cli.command("outcome"), outcome_text(reference))
+        self.assert_position_matches(reference)
+
+    def test_ends_repeated_positions_as_the_reference_does(self) -> None:
+        for sfen, before, cycle in REPEATED_CYCLES:
+            with self.subTest(sfen=sfen):
+                self.assertEqual(self.cli.command("sfen " + sfen), "ok")
+                reference = Board.from_sfen(sfen)
+                for usi in before + cycle * 3:
+                    self.assertEqual(self.cli.command("push " + usi), "ok")
+                    reference.push_usi(usi)
+                    self.assert_outcome_matches(reference)
+                self.assertIsNotNone(reference.outcome())
+
+    def test_counts_no_position_before_a_null_move_as_the_reference_does(self) -> None:
+        self.cli.command("startpos")
+        reference = Board.startpos()
+        shuffle = ("5i5h", "5a5b", "5h5i", "5b5a")
+        for usi in shuffle * 2:
+            self.cli.command("push " + usi)
+            reference.push_usi(usi)
+        for _ in range(2):
+            self.assertEqual(self.cli.command("null"), "ok")
+            reference.push(Move(None, None))
+            self.assert_outcome_matches(reference)
+        for usi in shuffle * 3:
+            self.cli.command("push " + usi)
+            reference.push_usi(usi)
+            self.assert_outcome_matches(reference)
+        for _ in range(len(shuffle) * 3 + 2):
+            self.assertEqual(self.cli.command("pop"), "ok")
+            reference.pop()
+            self.assert_outcome_matches(reference)
+
+    def test_ends_random_cycles_as_the_reference_does(self) -> None:
+        rng = random.Random(20261013)
+        cycles = 0
+        for sfen in playout_sfens(rng, 120)[::8]:
+            reference = Board.from_sfen(sfen)
+            cycle = find_cycle(reference)
+            if cycle is None:
+                continue
+            cycles += 1
+            self.assertEqual(self.cli.command("sfen " + sfen), "ok")
+            for usi in cycle * 3:
+                self.assertEqual(self.cli.command("push " + usi), "ok")
+                reference.push_usi(usi)
+                self.assert_outcome_matches(reference)
+            self.assertTrue(reference.is_fourfold_repetition())
+        self.assertGreater(cycles, 0)
+
+    def test_ends_a_position_without_legal_moves_as_the_reference_does(self) -> None:
+        sfen = "4k4/4G4/4P4/9/9/9/9/9/4K4 w - 1"
+        self.assertEqual(self.cli.command("sfen " + sfen), "ok")
+        self.assert_outcome_matches(Board.from_sfen(sfen))
 
     def test_keeps_the_position_when_an_sfen_is_rejected(self) -> None:
         self.cli.command("startpos")

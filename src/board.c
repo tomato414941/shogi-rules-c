@@ -1053,10 +1053,66 @@ bool sr_is_check(sr_board *board) {
                              board->king_squares[board->turn]);
 }
 
-bool sr_is_fourfold_repetition(const sr_board *board) {
-    /* The reference implementation stubs this to False. */
-    (void)board;
-    return false;
+static bool is_null_move(sr_move move) {
+    return move.from_square == -1 && move.to_square == -1;
+}
+
+/* How many times the current position has occurred since the board was set
+ * or the last null move, counting this time. */
+static int occurrences(const sr_board *board) {
+    int count = 1;
+    for (int i = board->undo_count - 1; i >= 0; i--) {
+        const sr_undo *undo = &board->undo_stack[i];
+        if (is_null_move(undo->move)) {
+            break;
+        }
+        if (undo->previous_hash == board->hash) {
+            count++;
+        }
+    }
+    return count;
+}
+
+bool sr_is_fourfold_repetition(const sr_board *board) { return occurrences(board) >= 4; }
+
+/* The side whose every move since the first of the last four occurrences of
+ * the current position gave check, or -1 when neither or both did. The moves
+ * are taken back and played again to see each position on the way. */
+static int perpetual_checker(sr_board *board) {
+    int end = board->undo_count;
+    int start = end;
+    for (int found = 1; found < 4;) {
+        start--;
+        if (board->undo_stack[start].previous_hash == board->hash) {
+            found++;
+        }
+    }
+    while (board->undo_count > start) {
+        sr_pop(board);
+    }
+    bool gave_check[2] = {true, true};
+    for (int i = start; i < end; i++) {
+        int mover = board->turn;
+        push_move(board, board->undo_stack[i].move);
+        gave_check[mover] = gave_check[mover] && sr_is_check(board);
+    }
+    if (gave_check[SR_BLACK] == gave_check[SR_WHITE]) {
+        return -1;
+    }
+    return gave_check[SR_BLACK] ? SR_BLACK : SR_WHITE;
+}
+
+sr_outcome sr_board_outcome(sr_board *board) {
+    sr_outcome outcome = {SR_ONGOING, -1};
+    if (sr_is_fourfold_repetition(board)) {
+        int checker = perpetual_checker(board);
+        outcome.termination = checker < 0 ? SR_REPETITION : SR_PERPETUAL_CHECK;
+        outcome.winner = checker < 0 ? -1 : 1 - checker;
+    } else if (!sr_has_legal_move(board)) {
+        outcome.termination = SR_CHECKMATE;
+        outcome.winner = 1 - board->turn;
+    }
+    return outcome;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1365,7 +1421,9 @@ bool sr_has_legal_move(sr_board *board) {
     return false;
 }
 
-bool sr_is_game_over(sr_board *board) { return !sr_has_legal_move(board); }
+bool sr_is_game_over(sr_board *board) {
+    return sr_board_outcome(board).termination != SR_ONGOING;
+}
 
 int sr_legal_tactical_moves(sr_board *board, sr_move *out,
                             bool include_quiet_checks) {
