@@ -10,6 +10,11 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_SRC = ROOT.parent / "shogi-rules-python" / "src"
+if not REFERENCE_SRC.is_dir():
+    sys.exit(
+        f"The oracle tests need shogi-rules-python at {REFERENCE_SRC.parent}:\n"
+        f"  git clone https://github.com/tomato414941/shogi-rules-python {REFERENCE_SRC.parent}"
+    )
 sys.path.insert(0, str(REFERENCE_SRC))
 
 from shogi_rules import BLACK, STARTPOS_SFEN, WHITE, Board, Move  # noqa: E402
